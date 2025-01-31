@@ -504,6 +504,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: /share/Zabbix/zabbix-docker-7.2/branding/favicon/favicon.ico
+        target: /usr/share/zabbix/favicon.ico
+        read_only: true
+        bind:
+          create_host_path: false
   zabbix-web-service:
     # profiles:
     #   - full
