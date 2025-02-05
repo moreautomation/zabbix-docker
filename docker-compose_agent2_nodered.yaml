@@ -1,0 +1,67 @@
+################################################################################
+# Node-RED Stack or Compose
+################################################################################
+# docker stack deploy node-red --compose-file docker-compose-node-red.yml
+# docker-compose -f docker-compose-node-red.yml -p myNoderedProject up
+################################################################################
+version: "3.7"
+
+services:
+  node-red:
+    image: nodered/node-red:latest
+    environment:
+      - TZ=America/Toronto
+    ports:
+      - "1880:1880"
+    networks:
+      iiot-bridge:
+      backend:
+        aliases:
+          - nodered
+    volumes:
+      - node-red-data:/data
+      
+  zabbix-agent:
+    attach: false
+    image: zabbix/zabbix-agent2:alpine-7.2-latest
+    init: true
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: agent
+      com.zabbix.description: Zabbix agent
+      com.zabbix.os: Alpine
+    networks:
+      backend:
+        aliases:
+          - zabbix-agent-iot
+          - zabbix-agent-passive-iot
+      iiot-bridge:
+    pid: host
+    ports:
+      - name: zabbix-agent
+        mode: ingress
+        target: 10050
+        published: "10050"
+        protocol: tcp
+        app_protocol: zabbix-agent
+    privileged: true
+    restart: unless-stopped
+    stop_grace_period: 5s
+    volumes:
+      - type: bind
+        source: /etc/localtime
+        target: /etc/localtime
+        read_only: true
+        bind:
+          create_host_path: true
+     
+
+volumes:
+  node-red-data:
+
+networks:
+  iiot-bridge:
+  backend:
+    name: zabbix-docker-72_backend
+    external: true
+    
