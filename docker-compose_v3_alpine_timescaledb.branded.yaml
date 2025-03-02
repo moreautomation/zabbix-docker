@@ -1,0 +1,602 @@
+name: zabbix-docker
+services:
+  db-data-pgsql:
+    attach: false
+    image: busybox:latest
+    networks:
+      default: null
+    volumes:
+      - type: bind
+        source: zbx_env/var/lib/postgresql/data
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: true
+  postgres-server:
+    attach: false
+    environment:
+      POSTGRES_DB: zabbix
+      POSTGRES_PASSWORD_FILE: /run/secrets/POSTGRES_PASSWORD
+      POSTGRES_USER_FILE: /run/secrets/POSTGRES_USER
+    image: postgres:16-alpine
+    networks:
+      database:
+        aliases:
+          - postgres-server
+    restart: unless-stopped
+    secrets:
+      - source: POSTGRES_USER
+        target: /run/secrets/POSTGRES_USER
+      - source: POSTGRES_PASSWORD
+        target: /run/secrets/POSTGRES_PASSWORD
+    stop_grace_period: 1m0s
+    volumes:
+      - type: bind
+        source: zbx_env/var/lib/postgresql/data
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: env_vars/.ZBX_DB_CA_FILE
+        target: /run/secrets/root-ca.pem
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: env_vars/.ZBX_DB_CERT_FILE
+        target: /run/secrets/server-cert.pem
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: env_vars/.ZBX_DB_KEY_FILE
+        target: /run/secrets/server-key.pem
+        read_only: true
+        bind:
+          create_host_path: true
+  server-db-init:
+    attach: true
+    command:
+      - init_db_only
+    depends_on:
+      postgres-server:
+        condition: service_started
+        required: true
+    environment:
+      POSTGRES_DB: zabbix
+      POSTGRES_PASSWORD_FILE: /run/secrets/POSTGRES_PASSWORD
+      POSTGRES_USER_FILE: /run/secrets/POSTGRES_USER
+    image: zabbix/zabbix-server-pgsql:alpine-7.2-latest
+    init: true
+    labels:
+      com.zabbix.dbtype: pgsql
+      com.zabbix.description: Zabbix server with PostgreSQL database support (database init)
+      com.zabbix.os: Alpine
+    networks:
+      database:
+        aliases:
+          - zabbix-server-pgsql-init
+    secrets:
+      - source: POSTGRES_USER
+        target: /run/secrets/POSTGRES_USER
+      - source: POSTGRES_PASSWORD
+        target: /run/secrets/POSTGRES_PASSWORD
+    volumes:
+      - type: bind
+        source: zbx_env/var/lib/zabbix/dbscripts
+        target: /var/lib/zabbix/dbscripts
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /etc/timezone
+        target: /etc/timezone
+        read_only: true
+        bind:
+          create_host_path: true
+  zabbix-agent:
+    profiles:
+      - full
+      - all
+    attach: false
+    deploy:
+      mode: global
+      resources:
+        limits:
+          cpus: 0.2
+          memory: "134217728"
+        reservations:
+          cpus: 0.1
+          memory: "67108864"
+    image: zabbix/zabbix-agent:alpine-7.2-latest
+    init: true
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: agent
+      com.zabbix.description: Zabbix agent
+      com.zabbix.os: Alpine
+    networks:
+      backend:
+        aliases:
+          - zabbix-agent
+          - zabbix-agent-passive
+    pid: host
+    ports:
+      - name: zabbix-agent
+        mode: ingress
+        target: 10050
+        published: "10050"
+        protocol: tcp
+        app_protocol: zabbix-agent
+    privileged: true
+    restart: unless-stopped
+    stop_grace_period: 5s
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: /etc/localtime
+        target: /etc/localtime
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/etc/zabbix/zabbix_agentd.d
+        target: /etc/zabbix/zabbix_agentd.d
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/modules
+        target: /var/lib/zabbix/modules
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/enc
+        target: /var/lib/zabbix/enc
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/ssh_keys
+        target: /var/lib/zabbix/ssh_keys
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/user_scripts
+        target: /var/lib/zabbix/user_scripts
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /etc/timezone
+        target: /etc/timezone
+        read_only: true
+        bind:
+          create_host_path: true
+  zabbix-java-gateway:
+    profiles:
+      - full
+      - all
+    attach: false
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "536870912"
+        reservations:
+          cpus: 0.25
+          memory: "268435456"
+    image: zabbix/zabbix-java-gateway:alpine-7.2-latest
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: java-gateway
+      com.zabbix.description: Zabbix Java Gateway
+      com.zabbix.os: Alpine
+    networks:
+      backend:
+        aliases:
+          - zabbix-java-gateway
+      frontend: null
+    ports:
+      - name: zabbix-java-gw
+        mode: ingress
+        target: 10052
+        published: "10052"
+        protocol: tcp
+    restart: unless-stopped
+    stop_grace_period: 5s
+  zabbix-server:
+    attach: true
+    depends_on:
+      server-db-init:
+        condition: service_completed_successfully
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 0.7
+          memory: "1073741824"
+        reservations:
+          cpus: 0.5
+          memory: "536870912"
+    environment:
+      POSTGRES_DB: zabbix
+      POSTGRES_PASSWORD_FILE: /run/secrets/POSTGRES_PASSWORD
+      POSTGRES_USER_FILE: /run/secrets/POSTGRES_USER
+      ZBX_ENABLE_SNMP_TRAPS: "true"
+      ZBX_JAVAGATEWAY: zabbix-java-gateway
+      ZBX_STARTJAVAPOLLERS: "5"
+    image: zabbix/zabbix-server-pgsql:alpine-7.2-latest
+    init: true
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: server
+      com.zabbix.dbtype: pgsql
+      com.zabbix.description: Zabbix server with PostgreSQL database support
+      com.zabbix.os: Alpine
+    networks:
+      backend:
+        aliases:
+          - zabbix-server
+          - zabbix-server-pgsql
+      database:
+        aliases:
+          - zabbix-server
+      frontend: null
+      tools_frontend: null
+    ports:
+      - name: zabbix-trapper
+        mode: ingress
+        target: 10051
+        published: "10051"
+        protocol: tcp
+        app_protocol: zabbix-trapper
+    restart: unless-stopped
+    secrets:
+      - source: POSTGRES_USER
+        target: /run/secrets/POSTGRES_USER
+      - source: POSTGRES_PASSWORD
+        target: /run/secrets/POSTGRES_PASSWORD
+    stop_grace_period: 30s
+    sysctls:
+      net.ipv4.conf.all.accept_redirects: "0"
+      net.ipv4.conf.all.secure_redirects: "0"
+      net.ipv4.conf.all.send_redirects: "0"
+      net.ipv4.ip_local_port_range: 1024 64999
+    tmpfs:
+      - /tmp
+    ulimits:
+      nofile:
+        soft: 20000
+        hard: 40000
+      nproc: 65535
+    volumes:
+      - type: bind
+        source: /etc/localtime
+        target: /etc/localtime
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/usr/lib/zabbix/alertscripts
+        target: /usr/lib/zabbix/alertscripts
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/usr/lib/zabbix/externalscripts
+        target: /usr/lib/zabbix/externalscripts
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/export
+        target: /var/lib/zabbix/export
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/modules
+        target: /var/lib/zabbix/modules
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/enc
+        target: /var/lib/zabbix/enc
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/ssh_keys
+        target: /var/lib/zabbix/ssh_keys
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/mibs
+        target: /var/lib/zabbix/mibs
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/ssl/certs
+        target: /var/lib/zabbix/ssl/certs
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/ssl/keys
+        target: /var/lib/zabbix/ssl/keys
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/var/lib/zabbix/ssl/ssl_ca
+        target: /var/lib/zabbix/ssl/ssl_ca
+        bind:
+          create_host_path: true
+      - type: volume
+        source: snmptraps
+        target: /var/lib/zabbix/snmptraps
+        volume: {}
+      - type: bind
+        source: /etc/timezone
+        target: /etc/timezone
+        read_only: true
+        bind:
+          create_host_path: true
+  zabbix-snmptraps:
+    profiles:
+      - full
+      - all
+    attach: false
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "268435456"
+        reservations:
+          cpus: 0.25
+          memory: "134217728"
+    environment:
+      ZBX_SNMP_TRAP_DATE_FORMAT: +%Y-%m-%dT%T%z
+      ZBX_SNMP_TRAP_FORMAT: \n
+      ZBX_SNMP_TRAP_USE_DNS: "false"
+    image: zabbix/zabbix-snmptraps:alpine-7.2-latest
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: snmptraps
+      com.zabbix.description: Zabbix snmptraps
+      com.zabbix.os: Alpine
+    networks:
+      backend: null
+      frontend:
+        aliases:
+          - zabbix-snmptraps
+    ports:
+      - name: snmptrap
+        mode: ingress
+        target: 1162
+        published: "162"
+        protocol: udp
+        app_protocol: snmptrap
+    read_only: true
+    restart: unless-stopped
+    stop_grace_period: 5s
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: volume
+        source: snmptraps
+        target: /var/lib/zabbix/snmptraps
+        volume: {}
+      - type: bind
+        source: zbx_env/var/lib/zabbix/snmptrapd_config
+        target: /var/lib/zabbix/snmptrapd_config
+        bind:
+          create_host_path: true
+  zabbix-web-nginx-pgsql:
+    attach: false
+    depends_on:
+      server-db-init:
+        condition: service_completed_successfully
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 0.7
+          memory: "536870912"
+        reservations:
+          cpus: 0.5
+          memory: "268435456"
+    environment:
+      POSTGRES_DB: zabbix
+      POSTGRES_PASSWORD_FILE: /run/secrets/POSTGRES_PASSWORD
+      POSTGRES_USER_FILE: /run/secrets/POSTGRES_USER
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_SERVER_NAME: Dashboard
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:8080/ping
+      timeout: 3s
+      interval: 1m30s
+      retries: 3
+      start_period: 40s
+      start_interval: 5s
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.2-latest
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: frontend
+      com.zabbix.dbtype: pgsql
+      com.zabbix.description: Zabbix frontend on Nginx web-server with PostgreSQL database support
+      com.zabbix.os: Alpine
+      com.zabbix.webserver: nginx
+    networks:
+      backend:
+        aliases:
+          - zabbix-web-nginx-pgsql
+      database: null
+      frontend: null
+    ports:
+      - name: web-http
+        mode: ingress
+        target: 80
+        published: "9080"
+        protocol: tcp
+        app_protocol: http
+      - name: web-https
+        mode: ingress
+        target: 443
+        published: "10443"
+        protocol: tcp
+        app_protocol: https
+    restart: unless-stopped
+    secrets:
+      - source: POSTGRES_USER
+        target: /run/secrets/POSTGRES_USER
+      - source: POSTGRES_PASSWORD
+        target: /run/secrets/POSTGRES_PASSWORD
+    stop_grace_period: 10s
+    sysctls:
+      net.core.somaxconn: "65535"
+    tmpfs:
+      - /tmp
+      - /var/lib/php/session:mode=770,uid=1997,gid=1995
+    volumes:
+      - type: bind
+        source: /etc/localtime
+        target: /etc/localtime
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/etc/ssl/nginx
+        target: /etc/ssl/nginx
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: zbx_env/usr/share/zabbix/modules
+        target: /usr/share/zabbix/modules
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /etc/timezone
+        target: /etc/timezone
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: brand.conf.php
+        target: /usr/share/zabbix/local/conf/brand.conf.php
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: branding
+        target: /usr/share/zabbix/branding
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: branding/favicon/favicon.ico
+        target: /usr/share/zabbix/favicon.ico
+        read_only: true
+        bind:
+          create_host_path: false
+  zabbix-web-service:
+    profiles:
+      - full
+      - all
+    attach: false
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "536870912"
+        reservations:
+          cpus: 0.25
+          memory: "268435456"
+    environment:
+      ZBX_ALLOWEDIP: zabbix-server
+    image: zabbix/zabbix-web-service:alpine-7.2-latest
+    labels:
+      com.zabbix.company: Zabbix SIA
+      com.zabbix.component: web-service
+      com.zabbix.description: Zabbix web service
+      com.zabbix.os: Alpine
+    networks:
+      backend:
+        aliases:
+          - zabbix-web-service
+    ports:
+      - name: zabbix-web-service
+        mode: ingress
+        target: 10053
+        published: "10053"
+        protocol: tcp
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - seccomp:./env_vars/chrome_dp.json
+    stop_grace_period: 5s
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: zbx_env/var/lib/zabbix/enc
+        target: /var/lib/zabbix/enc
+        read_only: true
+        bind:
+          create_host_path: true
+networks:
+  backend:
+    name: zabbix-docker_backend
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.239.0/24
+    internal: true
+    enable_ipv6: false
+  database:
+    name: zabbix-docker_database
+    driver: bridge
+    ipam:
+      driver: default
+    internal: true
+    enable_ipv6: false
+  default:
+    name: zabbix-docker_default
+  frontend:
+    name: zabbix-docker_frontend
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.238.0/24
+    enable_ipv6: false
+  tools_frontend:
+    name: zabbix-docker_tools_frontend
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.240.0/24
+    enable_ipv6: false
+volumes:
+  snmptraps:
+    name: zabbix-docker_snmptraps
+secrets:
+  POSTGRES_PASSWORD:
+    name: zabbix-docker_POSTGRES_PASSWORD
+    file: ./env_vars/.POSTGRES_PASSWORD
+  POSTGRES_USER:
+    name: zabbix-docker_POSTGRES_USER
+    file: ./env_vars/.POSTGRES_USER
